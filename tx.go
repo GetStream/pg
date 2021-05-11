@@ -3,9 +3,11 @@ package pg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-pg/pg/v10/internal"
 	"github.com/go-pg/pg/v10/internal/pool"
@@ -34,6 +36,8 @@ type Tx struct {
 	stmts   []*Stmt
 
 	_closed int32
+
+	testExecCancel func(query interface{}) time.Duration
 }
 
 var _ orm.DB = (*Tx)(nil)
@@ -164,6 +168,17 @@ func (tx *Tx) exec(ctx context.Context, query interface{}, params ...interface{}
 
 	var res Result
 	lastErr := tx.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		if tx.testExecCancel != nil {
+			// this code branch is only for testing
+			// you should not end up here in production
+			after := tx.testExecCancel(query)
+			if after > 0 {
+				go func() {
+					time.Sleep(after)
+					_ = tx.db.cancelRequest(cn.ProcessID, cn.SecretKey)
+				}()
+			}
+		}
 		res, err = tx.db.simpleQuery(ctx, cn, wb)
 		return err
 	})
@@ -337,9 +352,23 @@ func (tx *Tx) Commit() error {
 	return tx.CommitContext(tx.ctx)
 }
 
-// Commit commits the transaction.
+// closeIfError prevents putting broken transaction-bound connection back into connection pool
+func (tx *Tx) closeIfError(ctx context.Context, err error) error {
+	if err != nil {
+		_ = tx.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			_ = cn.Close()
+			return nil
+		})
+		err = fmt.Errorf("%w (connection closed)", err)
+	}
+	return err
+}
+
+// CommitContext commits the transaction.
 func (tx *Tx) CommitContext(ctx context.Context) error {
-	_, err := tx.ExecContext(internal.UndoContext(ctx), "COMMIT")
+	ctx = internal.UndoContext(ctx)
+	_, err := tx.ExecContext(ctx, "COMMIT")
+	err = tx.closeIfError(ctx, err)
 	tx.close()
 	return err
 }
@@ -348,18 +377,26 @@ func (tx *Tx) Rollback() error {
 	return tx.RollbackContext(tx.ctx)
 }
 
-// Rollback aborts the transaction.
+// RollbackContext aborts the transaction.
 func (tx *Tx) RollbackContext(ctx context.Context) error {
-	_, err := tx.ExecContext(internal.UndoContext(ctx), "ROLLBACK")
+	ctx = internal.UndoContext(ctx)
+	_, err := tx.ExecContext(ctx, "ROLLBACK")
+	err = tx.closeIfError(ctx, err)
 	tx.close()
 	return err
+}
+
+// TestExecCancel sets a hook which instructs TX to try to cancel request after sleeping for duration. Return 0 to not to cancel
+// ONLY FOR TEST USAGE
+func (tx *Tx) TestExecCancel(f func(query interface{}) time.Duration) {
+	tx.testExecCancel = f
 }
 
 func (tx *Tx) Close() error {
 	return tx.CloseContext(tx.ctx)
 }
 
-// Close calls Rollback if the tx has not already been committed or rolled back.
+// CloseContext calls Rollback if the tx has not already been committed or rolled back.
 func (tx *Tx) CloseContext(ctx context.Context) error {
 	if tx.closed() {
 		return nil
