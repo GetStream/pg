@@ -126,7 +126,7 @@ func (t *PoolTest) TestClosedTx(c *C) {
 
 	err = tx.Rollback()
 	c.Assert(err, Not(IsNil))
-	c.Assert(err.Error(), Equals, "pg: transaction has already been committed or rolled back")
+	c.Assert(err.Error(), Equals, "pg: transaction has already been committed or rolled back (connection closed on ROLLBACK)")
 
 	_, err = tx.Exec("SELECT 'test_closed_tx'")
 	c.Assert(err, Not(IsNil))
