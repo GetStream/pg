@@ -353,13 +353,10 @@ func (tx *Tx) Commit() error {
 }
 
 // closeIfError prevents putting broken transaction-bound connection back into connection pool
-func (tx *Tx) closeIfError(ctx context.Context, err error) error {
+func (tx *Tx) closeIfError(ctx context.Context, err error, op string) error {
 	if err != nil {
-		_ = tx.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-			_ = cn.Close()
-			return nil
-		})
-		err = fmt.Errorf("%w (connection closed)", err)
+		_ = tx.db.pool.(*pool.StickyConnPool).Reset(ctx)
+		err = fmt.Errorf("%w (connection closed on %s)", err, op)
 	}
 	return err
 }
@@ -368,7 +365,7 @@ func (tx *Tx) closeIfError(ctx context.Context, err error) error {
 func (tx *Tx) CommitContext(ctx context.Context) error {
 	ctx = internal.UndoContext(ctx)
 	_, err := tx.ExecContext(ctx, "COMMIT")
-	err = tx.closeIfError(ctx, err)
+	err = tx.closeIfError(ctx, err, "COMMIT")
 	tx.close()
 	return err
 }
@@ -381,7 +378,7 @@ func (tx *Tx) Rollback() error {
 func (tx *Tx) RollbackContext(ctx context.Context) error {
 	ctx = internal.UndoContext(ctx)
 	_, err := tx.ExecContext(ctx, "ROLLBACK")
-	err = tx.closeIfError(ctx, err)
+	err = tx.closeIfError(ctx, err, "ROLLBACK")
 	tx.close()
 	return err
 }
