@@ -355,7 +355,9 @@ func (tx *Tx) Commit() error {
 // closeIfError prevents putting broken transaction-bound connection back into connection pool
 func (tx *Tx) closeIfError(ctx context.Context, err error, op string) error {
 	if err != nil {
-		_ = tx.db.pool.(*pool.StickyConnPool).Reset(ctx)
+		sticky := tx.db.pool.(*pool.StickyConnPool)
+		sticky.SetConnError(err)
+		_ = sticky.Reset(ctx)
 		err = fmt.Errorf("%w (connection closed on %s)", err, op)
 	}
 	return err
