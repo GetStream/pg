@@ -352,7 +352,7 @@ func (tx *Tx) Commit() error {
 	return tx.CommitContext(tx.ctx)
 }
 
-// closeIfError prevents putting broken transaction-bound connection back into connection pool
+// closeIfError prevents putting broken transaction-bound connection back into connection pool.
 func (tx *Tx) closeIfError(ctx context.Context, err error, op string) error {
 	if err != nil {
 		sticky := tx.db.pool.(*pool.StickyConnPool)
@@ -385,8 +385,8 @@ func (tx *Tx) RollbackContext(ctx context.Context) error {
 	return err
 }
 
-// TestExecCancel sets a hook which instructs TX to try to cancel request after sleeping for duration. Return 0 to not to cancel
-// ONLY FOR TEST USAGE
+// TestExecCancel sets a hook which instructs TX to try to cancel request after sleeping for duration.
+// Return 0 to not to cancel. ONLY FOR TEST USAGE.
 func (tx *Tx) TestExecCancel(f func(query interface{}) time.Duration) {
 	tx.testExecCancel = f
 }
