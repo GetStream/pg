@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,8 @@ type Tx struct {
 	stmts   []*Stmt
 
 	_closed int32
+
+	beforeExec func(query interface{}, cn *pool.Conn)
 }
 
 var _ orm.DB = (*Tx)(nil)
@@ -164,6 +167,9 @@ func (tx *Tx) exec(ctx context.Context, query interface{}, params ...interface{}
 
 	var res Result
 	lastErr := tx.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		if tx.beforeExec != nil {
+			tx.beforeExec(query, cn)
+		}
 		res, err = tx.db.simpleQuery(ctx, cn, wb)
 		return err
 	})
@@ -337,9 +343,23 @@ func (tx *Tx) Commit() error {
 	return tx.CommitContext(tx.ctx)
 }
 
-// Commit commits the transaction.
+// closeIfError prevents putting broken transaction-bound connection back into connection pool
+func (tx *Tx) closeIfError(ctx context.Context, err error) error {
+	if err != nil {
+		_ = tx.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			_ = cn.Close()
+			return nil
+		})
+		err = fmt.Errorf("%w (connection closed)", err)
+	}
+	return err
+}
+
+// CommitContext commits the transaction.
 func (tx *Tx) CommitContext(ctx context.Context) error {
-	_, err := tx.ExecContext(internal.UndoContext(ctx), "COMMIT")
+	ctx = internal.UndoContext(ctx)
+	_, err := tx.ExecContext(ctx, "COMMIT")
+	err = tx.closeIfError(ctx, err)
 	tx.close()
 	return err
 }
@@ -348,18 +368,30 @@ func (tx *Tx) Rollback() error {
 	return tx.RollbackContext(tx.ctx)
 }
 
-// Rollback aborts the transaction.
+// RollbackContext aborts the transaction.
 func (tx *Tx) RollbackContext(ctx context.Context) error {
-	_, err := tx.ExecContext(internal.UndoContext(ctx), "ROLLBACK")
+	ctx = internal.UndoContext(ctx)
+	_, err := tx.ExecContext(ctx, "ROLLBACK")
+	err = tx.closeIfError(ctx, err)
 	tx.close()
 	return err
+}
+
+// CancelRequest exposes PG request cancellation function to test how TX reacts to cancelled queries
+func (tx *Tx) CancelRequest(processID int32, secretKey int32) error {
+	return tx.db.cancelRequest(processID, secretKey)
+}
+
+// BeforeExec sets a hook to be able to work directly with *pool.Conn. Use in testing purposes only
+func (tx *Tx) BeforeExec(f func(query interface{}, cn *pool.Conn)) {
+	tx.beforeExec = f
 }
 
 func (tx *Tx) Close() error {
 	return tx.CloseContext(tx.ctx)
 }
 
-// Close calls Rollback if the tx has not already been committed or rolled back.
+// CloseContext calls Rollback if the tx has not already been committed or rolled back.
 func (tx *Tx) CloseContext(ctx context.Context) error {
 	if tx.closed() {
 		return nil
