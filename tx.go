@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-pg/pg/v10/internal"
 	"github.com/go-pg/pg/v10/internal/pool"
@@ -36,7 +37,7 @@ type Tx struct {
 
 	_closed int32
 
-	beforeExec func(query interface{}, cn *pool.Conn)
+	testExecCancel func(query interface{}) time.Duration
 }
 
 var _ orm.DB = (*Tx)(nil)
@@ -167,8 +168,16 @@ func (tx *Tx) exec(ctx context.Context, query interface{}, params ...interface{}
 
 	var res Result
 	lastErr := tx.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-		if tx.beforeExec != nil {
-			tx.beforeExec(query, cn)
+		if tx.testExecCancel != nil {
+			// this code branch is only for testing
+			// you should not end up here in production
+			after := tx.testExecCancel(query)
+			if after > 0 {
+				go func() {
+					time.Sleep(after)
+					_ = tx.db.cancelRequest(cn.ProcessID, cn.SecretKey)
+				}()
+			}
 		}
 		res, err = tx.db.simpleQuery(ctx, cn, wb)
 		return err
@@ -377,14 +386,10 @@ func (tx *Tx) RollbackContext(ctx context.Context) error {
 	return err
 }
 
-// CancelRequest exposes PG request cancellation function to test how TX reacts to cancelled queries
-func (tx *Tx) CancelRequest(processID int32, secretKey int32) error {
-	return tx.db.cancelRequest(processID, secretKey)
-}
-
-// BeforeExec sets a hook to be able to work directly with *pool.Conn. Use in testing purposes only
-func (tx *Tx) BeforeExec(f func(query interface{}, cn *pool.Conn)) {
-	tx.beforeExec = f
+// TestExecCancel sets a hook which instructs TX to try to cancel request after sleeping for duration. Return 0 to not to cancel
+// ONLY FOR TEST USAGE
+func (tx *Tx) TestExecCancel(f func(query interface{}) time.Duration) {
+	tx.testExecCancel = f
 }
 
 func (tx *Tx) Close() error {
