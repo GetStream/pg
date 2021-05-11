@@ -147,10 +147,9 @@ func (p *StickyConnPool) Close() error {
 }
 
 func (p *StickyConnPool) Reset(ctx context.Context) error {
-	// Always reset connection even if there was no bad error
-	//if p.badConnError() == nil {
-	//	return nil
-	//}
+	if p.badConnError() == nil {
+		return nil
+	}
 
 	select {
 	case cn, ok := <-p.ch:
@@ -169,6 +168,10 @@ func (p *StickyConnPool) Reset(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (p *StickyConnPool) SetConnError(err error) {
+	p._badConnError.Store(BadConnError{wrapped: err})
 }
 
 func (p *StickyConnPool) badConnError() error {
